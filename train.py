@@ -39,10 +39,11 @@ class RolloutCallback(BaseCallback):
         self.ep_lengths = []
         self.ep_count = 0
         self.disable = disable
+        self.only_reward = False # Change to true to print only reward
 
     def _on_step(self) -> bool:
         if self.disable:
-            pass # change to return True
+            return True
             
         infos = self.locals.get('infos', [])
         for info in infos:
@@ -54,8 +55,9 @@ class RolloutCallback(BaseCallback):
                 self.ep_lengths.append(ep_len)
                 self.ep_count += 1
                 avg_rew_step = ep_rew / ep_len if ep_len > 0 else 0.0
-                print(avg_rew_step, flush=True)
-                return True
+                if self.only_reward:
+                    print(avg_rew_step, flush=True)
+                    return True
                 avg_rew_epis = sum(self.ep_rewards) / len(self.ep_rewards)
                 if len(self.ep_rewards) >= 2 and self.ep_rewards[-2] != 0:
                     perc_change = ((ep_rew - self.ep_rewards[-2]) / self.ep_rewards[-2]) * 100
