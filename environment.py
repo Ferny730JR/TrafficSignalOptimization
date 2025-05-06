@@ -63,9 +63,9 @@ class CityFlowEnv(Env):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.phase_step = 3
+        self.phase_step = 6
         self.step_count = 0
-        self.max_steps = 1024
+        self.max_steps = 512
         self.episode = 0
         self.replay_save_rate = 1_000
 
@@ -160,9 +160,7 @@ class CityFlowEnv(Env):
         # reward = - penalty / (penalty + 1)
         # return float(reward)
         waiting = self.eng.get_lane_waiting_vehicle_count()
-        vals = list(waiting.values())
-        return -(vals[1]+vals[3]+vals[0]+vals[2]+vals[1]+vals[14]+vals[3]+vals[12]+vals[15]+vals[13]+vals[14]+vals[12]+vals[0]+vals[15]+vals[2]+vals[13])
-        # waiting_cars_count = sum(list(waiting.values()))
+        return -(sum(waiting.values()))
         # return (-2 / (1 + exp(-0.1 * waiting_cars_count))) + 1
 
     def render(self, mode='human'):
