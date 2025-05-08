@@ -4,6 +4,7 @@ import math
 import cityflow
 from numpy import exp
 from gymnasium import Env, spaces
+from os import path
 
 def parse_roadnet(roadnet_file):
     """
@@ -56,23 +57,85 @@ def parse_roadnet(roadnet_file):
     return lane_phase_info
 
 class CityFlowEnv(Env):
+    """A Gymnasium environment wrapping CityFlow for traffic signal control via
+    DQN.
+    Action: discrete phase index.
+    State: Stacked waiting counts + current phase.
+
+    Args:
+        config (str, optional): Path to the CityFlow main configuration JSON
+                                file. Defaults to 'cityflow_config.json'.
+        roadnet (str, optional): Filename of the road network JSON within
+                                 `filedir`. Defaults to 'roadnet.json'.
+        flow (str, optional): Filename of the traffic flow JSON within
+                              `filedir`. Defaults to 'flow.json'.
+        filedir (str, optional): Directory containing the CityFlow JSON files
+                                 (`config`, `roadnet`, `flow`). Defaults to '.'.
+        phase_step (int, optional): Number of simulation steps the environment
+                                    remains in a selected traffic-light phase
+                                    before allowing a new action. Defaults to 6.
+        max_steps (int, optional): Maximum number of step calls per episode 
+                                   before termination. Defaults to 512.
+        thread_num (int, optional): Number of threads the CityFlow engine uses
+                                    for parallel simulation. Defaults to 1.
+        interval (float, optional): Simulation time interval (in seconds) per
+                                    engine step. Defaults to 1.0.
+        seed (int, optional): Random seed for reproducible CityFlow simulations.
+                              Defaults to 0.
+        save_replay (bool, optional): Whether to save replay logs of the
+                                      simulation to disk. Defaults to True.
+        replay_log_dir (str, optional): Directory where replay logs 
+                                        (`roadnetLogFile` and `replayLogFile`)
+                                        are stored. Defaults to 'replay_logs'.
+        replay_save_rate (int, optional): Episode interval at which to enable
+                                          saving replays (e.g., every N 
+                                          episodes). Defaults to 32.
     """
-    A Gymnasium environment wrapping CityFlow for traffic signal control via DQN.
-    Action: discrete phase index. State: stacked waiting counts + current phase.
-    """
-    def __init__(self, config):
+    def __init__(self, config: str='cityflow_config.json',
+                 roadnet: str='roadnet.json',
+                 flow='flow.json',
+                 filedir='./',
+                 phase_step: int=6, 
+                 max_steps: int=512,
+                 thread_num: int=1,
+                 interval: float=1.0,
+                 seed: int=0,
+                 save_replay=True,
+                 replay_log_dir='replay_logs',
+                 replay_save_rate: int=32) -> None:            
         super().__init__()
-        self.config = config
-        self.phase_step = 6
-        self.step_count = 0
-        self.max_steps = 512
-        self.episode = 0
-        self.replay_save_rate = 1_000
+
+        # Load config data if it exists, create it otherwise
+        try:
+            with open(config, 'r') as f:
+                config_data = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            config_data = {} # Either doesn't exist or file is empty
+
+        # Update values in the config file
+        config_data['interval']       = interval
+        config_data['seed']           = seed
+        config_data['dir']            = filedir
+        config_data['roadnetFile']    = roadnet
+        config_data['flowFile']       = flow
+        config_data['rlTrafficLight'] = True # always true since, well, we're doing RL
+        config_data['saveReplay']     = save_replay
+        config_data['roadnetLogFile'] = path.join(replay_log_dir, 'roadnet_log.json')
+        config_data['replayLogFile']  = path.join(replay_log_dir, 'replay.txt')
+
+        # Write the new json file
+        with open(config, 'w') as f:
+            json.dump(config_data, f, indent=2)
+
+        # Declare environment variable
+        self.phase_step       = phase_step
+        self.step_count       = 0
+        self.max_steps        = max_steps
+        self.episode          = 0
+        self.replay_save_rate = replay_save_rate
 
         # Load and parse roadnet
-        cf = json.load(open(config['cityflow_config_file']))
-        roadnet_path = cf['dir'] + cf['roadnetFile']
-        self.lane_phase_info = parse_roadnet(roadnet_path)
+        self.lane_phase_info = parse_roadnet(path.join(filedir, roadnet))
         self.intersection_id = list(self.lane_phase_info.keys())[0]
         self.phase_list = self.lane_phase_info[self.intersection_id]['phase']
 
@@ -88,7 +151,7 @@ class CityFlowEnv(Env):
         self.action_space = spaces.Discrete(self.action_size)
 
         # Initialize CityFlow engine
-        self.eng = cityflow.Engine(config['cityflow_config_file'], thread_num=config.get('thread_num', 1))
+        self.eng = cityflow.Engine(config, thread_num=thread_num)
         self.current_phase = self.phase_list[0]
 
     def reset(self, *, seed=None, options=None):
@@ -150,18 +213,9 @@ class CityFlowEnv(Env):
         return np.append(s, self.phase_list.index(self.current_phase))
 
     def _get_reward(self):
-        # waiting = self.eng.get_lane_waiting_vehicle_count()
-        # wait_vals = list(waiting.values())
-        # if not wait_vals:
-        #     return 0.0
-        # max_wait = max(wait_vals)
-        # avg_wait = sum(wait_vals) / len(wait_vals)
-        # penalty = max_wait + avg_wait
-        # reward = - penalty / (penalty + 1)
-        # return float(reward)
         waiting = self.eng.get_lane_waiting_vehicle_count()
-        return -(sum(waiting.values()))
-        # return (-2 / (1 + exp(-0.1 * waiting_cars_count))) + 1
+        return -sum(waiting.values())
+        # return (-2 / (1 + exp(-0.05 * waiting_cars_count))) + 1
 
     def render(self, mode='human'):
         pass
