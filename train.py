@@ -77,7 +77,7 @@ class RolloutCallback(BaseCallback):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='global_config.json', help='Path to config file')
+    parser.add_argument('--config', type=str, default='cityflow_config.json', help='Path to config file')
     parser.add_argument('--timesteps', type=int, default=1_000_000, help='Total timesteps to train')
     parser.add_argument('--learning_rate', type=float, default=0.01)
     parser.add_argument('--buffer_size', type=int, default=10_000)
@@ -89,6 +89,7 @@ def parse_args():
     parser.add_argument('--checkpoint_freq', type=int, default=100_000)
     parser.add_argument('--model_dir', type=str, default='model', help='Directory to save models')
     parser.add_argument('--log_dir', type=str, default='logs', help='Tensorboard log dir')
+    parser.add_argument('--replay_dir', type=str, default='replay_logs', help='Replay log dir')
     parser.add_argument('--verbose', action=argparse.BooleanOptionalAction, help='Verbose output')
     return parser.parse_args()
 
@@ -97,21 +98,13 @@ def main():
     logging.basicConfig(level=logging.INFO)
     args = parse_args()
 
-    # Load and update CityFlow config
-    with open(args.config) as f:
-        config = json.load(f)
-    cf_file = config['cityflow_config_file']
-    cf = json.load(open(cf_file))
-    # cf.update({'saveReplay': False, 'printLog': False, 'logFile': None})
-    # json.dump(cf, open(cf_file, 'w'), indent=2)
-
     # Initialize environment with Monitor for episode logging
-    raw_env = CityFlowEnv(config)
-    env = Monitor(raw_env)
+    env = Monitor(CityFlowEnv(args.config, phase_step=6, max_steps=512))
 
     # Create directories
     os.makedirs(args.model_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
+    os.makedirs(args.replay_dir, exist_ok=True)
 
     # Set up callbacks
     checkpoint_callback = CheckpointCallback(
