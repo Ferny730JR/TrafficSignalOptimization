@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import logging
+import csv
 from tqdm import tqdm
 from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
@@ -138,6 +139,11 @@ def main():
 
     # Save final model
     model.save(os.path.join(args.model_dir, 'dqn_final'))
+
+    # Save training rewards to file
+    with open(os.path.join(args.model_dir, 'rewards.csv'), 'w') as f:
+        write = csv.writer(f)
+        write.writerow(rollout_callback.ep_rewards)
 
 if __name__ == '__main__':
     main()
