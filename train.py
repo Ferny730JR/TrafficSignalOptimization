@@ -7,7 +7,7 @@ from tqdm import tqdm
 from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
-from environment import CityFlowEnv
+from environment import *
 
 class ProgressBarCallback(BaseCallback):
     """
@@ -100,7 +100,12 @@ def main():
     args = parse_args()
 
     # Initialize environment with Monitor for episode logging
-    env = Monitor(CityFlowEnv(args.config, phase_step=6, max_steps=512))
+    env = Monitor(CityFlowEnv(args.config,
+                              phase_step=6,
+                              max_steps=512,
+                              state_fn=state_wait_count,
+                              reward_fn=reward_avg_wait,
+                              replay_save_rate=100))
 
     # Create directories
     os.makedirs(args.model_dir, exist_ok=True)
