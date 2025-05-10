@@ -1,10 +1,10 @@
 import json
 import numpy as np
-import math
 import cityflow
 from numpy import exp
 from gymnasium import Env, spaces
 from os import path
+from typing import Callable, Dict, Any
 
 def parse_roadnet(roadnet_file):
     """
@@ -56,6 +56,61 @@ def parse_roadnet(roadnet_file):
         lane_phase_info[inter['id']] = info
     return lane_phase_info
 
+
+# --- State function definitions ---
+def state_wait_count(env: 'CityFlowEnv') -> np.ndarray:
+    """Feature 1: number of waiting vehicles per start lane"""
+    waiting = env.eng.get_lane_waiting_vehicle_count()
+    s = [ waiting.get(lane, 0) for lane in env.start_lane ]
+    return np.append(s, env.phase_list.index(env.current_phase)).astype(np.float32)
+
+
+def state_end_count(env: 'CityFlowEnv') -> np.ndarray:
+    """Feature 2: number of vehicles in end lanes"""
+    total = env.eng.get_lane_vehicle_count()
+    end_lanes = env.lane_phase_info[env.intersection_id]['end_lane']
+    s = [ total.get(lane, 0) for lane in end_lanes ]
+    return np.append(s, env.phase_list.index(env.current_phase)).astype(np.float32)
+
+
+def state_avg_wait(env: 'CityFlowEnv') -> np.ndarray:
+    """Feature 3: average wait time (in steps) per start lane"""
+    vehicle_ids = env.eng.get_lane_vehicles()
+    s = []
+    for lane in env.start_lane:
+        # Count waiting vehicles (speed < 0.1)
+        for vid in vehicle_ids[lane]:
+            info = env.eng.get_vehicle_info(vid)
+            if info['running'] and float(info['speed']) < 0.1:
+                env.wait_spawn_times[lane][vid] = env.wait_spawn_times[lane].get(vid, 0) + 1
+
+        # Prune moving or departed vehicles
+        active = set(vehicle_ids[lane])
+        for vid in list(env.wait_spawn_times[lane].keys()):
+            info = env.eng.get_vehicle_info(vid)
+            if vid not in active or float(info['speed']) >= 0.1:
+                del env.wait_spawn_times[lane][vid]
+        
+        # Compute the average wait time (in engine steps)
+        counts = list(env.wait_spawn_times[lane].values())
+        avg = sum(counts) / len(counts) if counts else 0.0
+        s.append(avg)
+    return np.append(s, env.phase_list.index(env.current_phase)).astype(np.float32)
+
+
+# --- Reward function definitions ---
+def reward_wait_sum(env: 'CityFlowEnv') -> float:
+    """Reward 1: negative sum of waiting vehicles"""
+    waiting = env.eng.get_lane_waiting_vehicle_count()
+    return -sum(waiting.values())
+
+
+def reward_avg_wait(env: 'CityFlowEnv') -> float:
+    """Reward 2: negative average of per-lane average wait times"""
+    state = state_avg_wait(env)[:-1]  # drop phase index
+    return -np.mean(state)
+
+
 class CityFlowEnv(Env):
     """A Gymnasium environment wrapping CityFlow for traffic signal control via
     DQN.
@@ -90,19 +145,24 @@ class CityFlowEnv(Env):
         replay_save_rate (int, optional): Episode interval at which to enable
                                           saving replays (e.g., every N 
                                           episodes). Defaults to 32.
+        state_fn (Callable, optional): function to compute state.
+        reward_fn (Callable, optional): function to compute single-step reward.
     """
     def __init__(self, config: str='cityflow_config.json',
                  roadnet: str='roadnet.json',
                  flow='flow.json',
                  filedir='./',
-                 phase_step: int=6, 
+                 phase_step: int=6,
                  max_steps: int=512,
                  thread_num: int=1,
                  interval: float=1.0,
                  seed: int=0,
                  save_replay=True,
                  replay_log_dir='replay_logs',
-                 replay_save_rate: int=32) -> None:            
+                 replay_save_rate: int=32,
+                 state_fn: Callable[['CityFlowEnv'], np.ndarray] = state_wait_count,
+                 reward_fn: Callable[['CityFlowEnv'], float] = reward_wait_sum
+                ) -> None:
         super().__init__()
 
         # Load config data if it exists, create it otherwise
@@ -138,6 +198,7 @@ class CityFlowEnv(Env):
         self.lane_phase_info = parse_roadnet(path.join(filedir, roadnet))
         self.intersection_id = list(self.lane_phase_info.keys())[0]
         self.phase_list = self.lane_phase_info[self.intersection_id]['phase']
+        self.start_lane = self.lane_phase_info[self.intersection_id]['start_lane']
 
         # Define state & action sizes
         self.state_size = len(self.lane_phase_info[self.intersection_id]['start_lane']) + 1
@@ -154,6 +215,13 @@ class CityFlowEnv(Env):
         self.eng = cityflow.Engine(config, thread_num=thread_num)
         self.current_phase = self.phase_list[0]
 
+        # State/reward functions
+        self.state_fn = state_fn
+        self.reward_fn = reward_fn
+
+        # Initialize trackers (used by feature 3)
+        self.wait_spawn_times = {lane: {} for lane in self.start_lane}
+
     def reset(self, *, seed=None, options=None):
         """
         Reset the simulation. Compatibility with Gymnasium: accepts seed and options.
@@ -162,12 +230,10 @@ class CityFlowEnv(Env):
         self.step_count = 0
         self.episode += 1
 
-        if ((self.episode-1) % self.replay_save_rate) == 0:
-            self.eng.set_save_replay(True)
-        else:
-            self.eng.set_save_replay(False)
+        # Save this episode's replay?
+        self.eng.set_save_replay((self.episode-1) % self.replay_save_rate == 0)
 
-
+        # Set the seed if specified
         if seed is not None:
             try:
                 self.eng.set_random_seed(seed)
@@ -175,47 +241,28 @@ class CityFlowEnv(Env):
                 pass
         self.eng.reset()
         self.current_phase = self.phase_list[0]
-        obs = self._get_state()
-        info = {}
 
-        return obs, info
+        # Clear wait trackers
+        self.wait_spawn_times = {lane: {} for lane in self.start_lane} # for feature 3
+        obs = self.state_fn(self)
+
+        return obs, {}
 
     def step(self, action_idx):
         self.step_count += 1
-        phase = self.phase_list[action_idx]
-        self.current_phase = phase
-        self.eng.set_tl_phase(self.intersection_id, phase)
+        self.current_phase = self.phase_list[action_idx]
+        self.eng.set_tl_phase(self.intersection_id, self.current_phase)
 
         total_reward = 0.0
         for _ in range(self.phase_step):
             self.eng.next_step()
-            total_reward += self._get_reward()
+            total_reward += self.reward_fn(self)
         total_reward /= self.phase_step
 
-        obs = self._get_state()
+        # Get state
+        obs = self.state_fn(self)
         terminated = self.step_count >= self.max_steps
-        truncated = False
-        info = {}
-        return obs, total_reward, terminated, truncated, info
-
-    def _get_state(self):
-        waiting = self.eng.get_lane_waiting_vehicle_count()
-        vals = list(waiting.values())
-        s = np.zeros(8, dtype=np.float32)
-        s[0] = vals[1] + vals[15]
-        s[1] = vals[3] + vals[13]
-        s[2] = vals[0] + vals[14]
-        s[3] = vals[2] + vals[12]
-        s[4] = vals[1] + vals[0]
-        s[5] = vals[14] + vals[15]
-        s[6] = vals[3] + vals[2]
-        s[7] = vals[12] + vals[13]
-        return np.append(s, self.phase_list.index(self.current_phase))
-
-    def _get_reward(self):
-        waiting = self.eng.get_lane_waiting_vehicle_count()
-        return -sum(waiting.values())
-        # return (-2 / (1 + exp(-0.05 * waiting_cars_count))) + 1
+        return obs, total_reward, terminated, False, {}
 
     def render(self, mode='human'):
         pass
