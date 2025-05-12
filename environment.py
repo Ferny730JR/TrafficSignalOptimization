@@ -97,6 +97,15 @@ def state_avg_wait(env: 'CityFlowEnv') -> np.ndarray:
         s.append(avg)
     return np.append(s, env.phase_list.index(env.current_phase)).astype(np.float32)
 
+def state_start_count(env: 'CityFlowEnv') -> np.ndarray:
+    """Feature 4: Number of vehicles in start lanes
+
+    Returns:
+        _type_: Numpy array containing the number of vehicles in start lanes
+    """
+    total = env.eng.get_lane_vehicle_count()
+    s = [ total.get(lane, 0) for lane in env.start_lane ]
+    return np.append(s, env.phase_list.index(env.current_phase)).astype(np.float32)
 
 # --- Reward function definitions ---
 def reward_wait_sum(env: 'CityFlowEnv') -> float:
@@ -109,6 +118,18 @@ def reward_avg_wait(env: 'CityFlowEnv') -> float:
     """Reward 2: negative average of per-lane average wait times"""
     state = state_avg_wait(env)[:-1]  # drop phase index
     return -np.mean(state)
+
+def reward_avg_travel(env: 'CityFlowEnv') -> float:
+    """Reward 3: Negative average of the travel time for vehicles to reach
+    their destination.
+
+    Args:
+        env (CityFlowEnv): The environment to use
+
+    Returns:
+        float: Reward value
+    """
+    return -env.eng.get_average_travel_time()
 
 
 class CityFlowEnv(Env):
